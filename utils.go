@@ -215,10 +215,10 @@ func setupBridge(n *NetConf) (*netlink.Bridge, error) {
 	}
 
 	// Set the bridge IP address
-	err = setBridgeIP(n)
-	if err != nil {
-		return nil, fmt.Errorf("failed to set bridge IP: %v", err)
-	}
+	//err = setBridgeIP(n)
+	//if err != nil {
+	//	return nil, fmt.Errorf("failed to set bridge IP: %v", err)
+	//}
 
 	return br, nil
 }
