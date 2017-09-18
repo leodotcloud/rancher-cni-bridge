@@ -30,6 +30,7 @@ import (
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/utils"
 	"github.com/containernetworking/cni/pkg/version"
+	"github.com/rancher/rancher-cni-bridge/fastpath"
 	"github.com/vishvananda/netlink"
 )
 
@@ -43,6 +44,12 @@ func init() {
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
+	var (
+		useFastPath        bool
+		fastPathMac        string
+		fastPathIPAMResult *types.Result
+	)
+
 	n, err := loadNetConf(args.StdinData)
 	if err != nil {
 		return err
@@ -93,19 +100,31 @@ func cmdAdd(args *skel.CmdArgs) error {
 		logrus.Infof("rancher-cni-bridge: container already has interface: %v, no worries", args.IfName)
 	}
 
-	macAddressToSet := ""
-	if nArgs.MACAddress != "" {
-		logrus.Debugf("rancher-cni-bridge: setting the %v interface %v MAC address: %v", args.ContainerID, args.IfName, nArgs.MACAddress)
-		macAddressToSet = string(nArgs.MACAddress)
-	} else {
-		macAddressToSet, err = findMACAddressForContainer(args.ContainerID, string(nArgs.RancherContainerUUID))
+	if nArgs.RancherContainerUUID == "" {
+		useFastPath = true
+		fastPathMac, fastPathIPAMResult, err = fastpath.GetMacAndIPInfo(args.ContainerID)
 		if err != nil {
-			logrus.Errorf("rancher-cni-bridge: err=%v", err)
+			logrus.Errorf("rancher-cni-bridge: error fetching info using fastpath: %v", err)
 			return err
 		}
-		logrus.Debugf("rancher-cni-bridge: found the %v interface %v MAC address: %v", args.ContainerID, args.IfName, macAddressToSet)
 	}
 
+	macAddressToSet := ""
+	if !useFastPath {
+		if nArgs.MACAddress != "" {
+			logrus.Debugf("rancher-cni-bridge: setting the %v interface %v MAC address: %v", args.ContainerID, args.IfName, nArgs.MACAddress)
+			macAddressToSet = string(nArgs.MACAddress)
+		} else {
+			macAddressToSet, err = findMACAddressForContainer(args.ContainerID, string(nArgs.RancherContainerUUID))
+			if err != nil {
+				logrus.Errorf("rancher-cni-bridge: err=%v", err)
+				return err
+			}
+			logrus.Debugf("rancher-cni-bridge: found the %v interface %v MAC address: %v", args.ContainerID, args.IfName, macAddressToSet)
+		}
+	} else {
+		macAddressToSet = fastPathMac
+	}
 	if err := netns.Do(func(_ ns.NetNS) error {
 		err := setInterfaceMacAddress(args.IfName, macAddressToSet)
 		if err != nil {
@@ -117,10 +136,15 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	// run the IPAM plugin and get back the config to apply
-	result, err := ipam.ExecAdd(n.IPAM.Type, args.StdinData)
-	if err != nil {
-		return err
+	var result *types.Result
+	if !useFastPath {
+		// run the IPAM plugin and get back the config to apply
+		result, err = ipam.ExecAdd(n.IPAM.Type, args.StdinData)
+		if err != nil {
+			return err
+		}
+	} else {
+		result = fastPathIPAMResult
 	}
 
 	// TODO: make this optional when IPv6 is supported
